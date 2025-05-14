@@ -1,176 +1,129 @@
-import requests
 import os
 import hashlib
+import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 import tarfile
-import gzip
-import json 
+import time
 
-# replace your email and password in https://www.nuscenes.org/
-useremail = "your_email"
-password = "your_password"
-
-output_dir = "/path/to/save"
-region = 'asia' # 'us' or 'asia'
-
-
-download_files = {
-    "v1.0-test_meta.tgz":"b0263f5c41b780a5a10ede2da99539eb",
-    "v1.0-test_blobs.tgz":"e065445b6019ecc15c70ad9d99c47b33",
-    "v1.0-trainval01_blobs.tgz":"cbf32d2ea6996fc599b32f724e7ce8f2",
-    "v1.0-trainval02_blobs.tgz":"aeecea4878ec3831d316b382bb2f72da",
-    "v1.0-trainval03_blobs.tgz":"595c29528351060f94c935e3aaf7b995",
-    "v1.0-trainval04_blobs.tgz":"b55eae9b4aa786b478858a3fc92fb72d",
-    "v1.0-trainval05_blobs.tgz":"1c815ed607a11be7446dcd4ba0e71ed0",
-    "v1.0-trainval06_blobs.tgz":"7273eeea36e712be290472859063a678",
-    "v1.0-trainval07_blobs.tgz":"46674d2b2b852b7a857d2c9a87fc755f",
-    "v1.0-trainval08_blobs.tgz":"37524bd4edee2ab99678909334313adf",
-    "v1.0-trainval09_blobs.tgz":"a7fcd6d9c0934e4052005aa0b84615c0",
-    "v1.0-trainval10_blobs.tgz":"31e795f2c13f62533c727119b822d739",
-    "v1.0-trainval_meta.tgz":"537d3954ec34e5bcb89a35d4f6fb0d4a",
+files = {
+    'v1.0-trainval01_blobs.tgz': ['https://motional-nuscenes.s3.amazonaws.com/public/v1.0/v1.0-trainval01_blobs.tgz', './v1.0-trainval01_blobs.tgz', 'cbf32d2ea6996fc599b32f724e7ce8f2'],
+    'v1.0-trainval02_blobs.tgz': ['https://motional-nuscenes.s3.amazonaws.com/public/v1.0/v1.0-trainval02_blobs.tgz', './v1.0-trainval02_blobs.tgz', 'aeecea4878ec3831d316b382bb2f72da'],
+    'v1.0-trainval03_blobs.tgz': ['https://d36yt3mvayqw5m.cloudfront.net/public/v1.0/v1.0-trainval03_blobs.tgz', './v1.0-trainval03_blobs.tgz', '595c29528351060f94c935e3aaf7b995'],
+    'v1.0-trainval04_blobs.tgz': ['https://motional-nuscenes.s3.amazonaws.com/public/v1.0/v1.0-trainval04_blobs.tgz', './v1.0-trainval04_blobs.tgz', 'b55eae9b4aa786b478858a3fc92fb72d'],
+    'v1.0-trainval05_blobs.tgz': ['https://d36yt3mvayqw5m.cloudfront.net/public/v1.0/v1.0-trainval05_blobs.tgz', './v1.0-trainval05_blobs.tgz', '1c815ed607a11be7446dcd4ba0e71ed0'],
+    'v1.0-trainval06_blobs.tgz': ['https://d36yt3mvayqw5m.cloudfront.net/public/v1.0/v1.0-trainval06_blobs.tgz', './v1.0-trainval06_blobs.tgz', '7273eeea36e712be290472859063a678'],
+    'v1.0-trainval07_blobs.tgz': ['https://d36yt3mvayqw5m.cloudfront.net/public/v1.0/v1.0-trainval07_blobs.tgz', './v1.0-trainval07_blobs.tgz', '46674d2b2b852b7a857d2c9a87fc755f'],
+    'v1.0-trainval08_blobs.tgz': ['https://motional-nuscenes.s3.amazonaws.com/public/v1.0/v1.0-trainval08_blobs.tgz', './v1.0-trainval08_blobs.tgz', '37524bd4edee2ab99678909334313adf'],
+    'v1.0-trainval09_blobs.tgz': ['https://motional-nuscenes.s3.amazonaws.com/public/v1.0/v1.0-trainval09_blobs.tgz', './v1.0-trainval09_blobs.tgz', 'a7fcd6d9c0934e4052005aa0b84615c0'],
+    'v1.0-trainval10_blobs.tgz': ['https://motional-nuscenes.s3.amazonaws.com/public/v1.0/v1.0-trainval10_blobs.tgz', './v1.0-trainval10_blobs.tgz', '31e795f2c13f62533c727119b822d739'],
+    'v1.0-trainval_meta.tgz': ['https://d36yt3mvayqw5m.cloudfront.net/public/v1.0/v1.0-trainval_meta.tgz', './v1.0-trainval_meta.tgz', '537d3954ec34e5bcb89a35d4f6fb0d4a'],
 }
 
+def md5sum(filename, buf_size=1024*1024):
+    md5 = hashlib.md5()
+    with open(filename, 'rb') as f:
+        while True:
+            data = f.read(buf_size)
+            if not data:
+                break
+            md5.update(data)
+    return md5.hexdigest()
 
-
-def login(username, password):
-    headers = {
-        "Content-Type": "application/x-amz-json-1.1",
-        "X-Amz-Target": "AWSCognitoIdentityProviderService.InitiateAuth",
-    }
-
-    # Use json.dumps() for correct JSON formatting
-    data = json.dumps({
-        "AuthFlow": "USER_PASSWORD_AUTH",
-        "ClientId": "7fq5jvs5ffs1c50hd3toobb3b9",
-        "AuthParameters": {
-            "USERNAME": username,
-            "PASSWORD": password
-        },
-        "ClientMetadata": {}
-    })
-
-    response = requests.post(
-        "https://cognito-idp.us-east-1.amazonaws.com/",
-        headers=headers,
-        data=data,
-    )
-
-    if response.status_code == 200:
-        try:
-            token = json.loads(response.content)["AuthenticationResult"]["IdToken"]
-            return token
-        except KeyError:
-            print("Authentication failed. 'AuthenticationResult' not found in the response.")
-    else:
-        print("Failed to login. Status code:", response.status_code)
-
-    return None
-
-def download_file(url, save_file,md5):
-    response = requests.get(url, stream=True)
-    if save_file.endswith(".tgz"):
-        content_type = response.headers.get('Content-Type', '')
-        if content_type == 'application/x-tar':
-            save_file = save_file.replace('.tgz', '.tar')
-        elif content_type != 'application/octet-stream':
-            print("unknow content type",content_type)
-            return save_file
-
-    if os.path.exists(save_file):
-        print(save_file,"has downloaded")
-        # check md5
-        md5obj = hashlib.md5()
-        with open(save_file, 'rb') as file:
-            for chunk in file:
-                md5obj.update(chunk)
-        hash = md5obj.hexdigest()
-        if hash != md5:
-            print(save_file,"check md5 failed,download again")
-        else:
-            print(save_file,"check md5 success")
-            return save_file
+def extract_tar(filepath, position):
+    try:
+        # 获取文件所在目录
+        extract_dir = os.path.dirname(filepath) or '.'
         
-    file_size = int(response.headers.get('Content-Length', 0))
-    progress_bar = tqdm(total=file_size, unit='B', unit_scale=True, unit_divisor=1024,desc=save_file, ascii=True)
+        with tarfile.open(filepath, 'r:*') as tar:
+            # 解压到当前目录
+            tar.extractall(path=extract_dir)
+        tqdm.write(f"[{os.path.basename(filepath)}] 解压完成。")
+        return True
+    except Exception as e:
+        tqdm.write(f"[{os.path.basename(filepath)}] 解压失败：{e}")
+        return False
 
-
-    # save file & check md5
-    md5obj = hashlib.md5()
-    with open(save_file, 'wb') as file:
-        for chunk in response.iter_content(chunk_size=1024):
-            if chunk:
-                md5obj.update(chunk)
-                file.write(chunk)
-                progress_bar.update(len(chunk))
-    progress_bar.close()
-
-    hash = md5obj.hexdigest()
-    if hash != md5:
-        print(save_file,"check md5 failed")
-    else:
-        print(save_file,"check md5 success")
-
-    return save_file
-
-
-
-
-def extract_tgz_to_original_folder(tgz_file_path):
-    original_folder = os.path.dirname(tgz_file_path)
-    print(f"Extracting {tgz_file_path} to {original_folder}")
-
-    with gzip.open(tgz_file_path, 'rb') as f_in:
-        with tarfile.open(fileobj=f_in, mode='r') as tar:
-            tar.extractall(original_folder)
-
-def extract_tar_to_original_folder(tar_file_path):
-    original_folder = os.path.dirname(tar_file_path)
-    print(f"Extracting {tar_file_path} to {original_folder}")
-
-    with tarfile.open(tar_file_path, 'r') as tar:
-        tar.extractall(original_folder)
+def download_file(name, url, out_path, md5, position):
+    # 检查文件是否已存在并且MD5正确
+    if os.path.exists(out_path):
+        file_md5 = md5sum(out_path)
+        if file_md5 == md5:
+            tqdm.write(f"[{name}] 文件已存在且MD5校验通过，跳过下载，开始解压...")
+            extract_tar(out_path, position)
+            return
+        else:
+            tqdm.write(f"[{name}] 文件已存在但MD5不匹配，将继续下载...")
+    
+    # 确定文件大小和断点续传的起始位置
+    file_size = 0
+    headers = {}
+    if os.path.exists(out_path):
+        file_size = os.path.getsize(out_path)
+        headers['Range'] = f'bytes={file_size}-'
+        tqdm.write(f"[{name}] 从 {file_size} 字节处继续下载")
+    
+    try:
+        with requests.get(url, headers=headers, stream=True, timeout=60) as r:
+            # 如果服务器不支持断点续传，重新下载
+            if r.status_code == 416:  # 请求范围不满足
+                tqdm.write(f"[{name}] 服务器不支持断点续传或文件大小已变更，重新下载")
+                file_size = 0
+                headers = {}
+                with requests.get(url, headers=headers, stream=True, timeout=60) as r:
+                    r.raise_for_status()
+                    total = int(r.headers.get('content-length', 0))
+                    mode = 'wb'  # 重新写入
+            else:
+                r.raise_for_status()
+                # 获取内容长度
+                if 'content-length' in r.headers:
+                    total = int(r.headers.get('content-length', 0)) + file_size
+                else:
+                    total = 0  # 未知大小
+                mode = 'ab'  # 追加模式
+            
+            # 创建进度条
+            with open(out_path, mode) as f, tqdm(
+                desc=f"{name}",
+                initial=file_size,
+                total=total,
+                unit='B',
+                unit_scale=True,
+                unit_divisor=1024,
+                position=position,
+                leave=True,
+                miniters=1,
+                ascii=True,
+                dynamic_ncols=True,
+            ) as bar:
+                for chunk in r.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        f.write(chunk)
+                        bar.update(len(chunk))
+            
+            # 校验MD5
+            file_md5 = md5sum(out_path)
+            if file_md5 != md5:
+                tqdm.write(f"[{name}] 错误: MD5校验失败！期望:{md5} 实际:{file_md5}")
+            else:
+                tqdm.write(f"[{name}] 下载并校验成功，开始解压...")
+                extract_tar(out_path, position)
+    except requests.exceptions.RequestException as e:
+        tqdm.write(f"[{name}] 下载出错: {e}，5秒后重试...")
+        time.sleep(5)
+        download_file(name, url, out_path, md5, position)
+    except Exception as e:
+        tqdm.write(f"[{name}] 错误: {e}")
 
 def main():
-    print("Loginging...")
-    bearer_token = login(useremail, password)
-    # set request header
-    headers = {
-        'Authorization': f'Bearer {bearer_token}',
-        'Content-Type': 'application/json',
-    }
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        futures = []
+        for idx, (name, (url, out_path, md5)) in enumerate(files.items()):
+            futures.append(executor.submit(download_file, name, url, out_path, md5, idx))
+        for future in as_completed(futures):
+            future.result()
 
-    print("Getting download urls...")
-    download_data = {}
-    for filename,md5 in download_files.items():
-        api_url = f'https://o9k5xn5546.execute-api.us-east-1.amazonaws.com/v1/archives/v1.0/{filename}?region={region}&project=nuScenes'
-
-        response = requests.get(api_url, headers=headers)
-
-        if response.status_code == 200:
-            print(filename,'request success')
-            download_url = response.json()['url']
-            download_data[filename] = [download_url,os.path.join(output_dir,filename),md5]
-        else:
-            print(f'request failed : {response.status_code}')
-            print(response.text)
-
-    print("Downloading files...")
-
-    os.makedirs(output_dir,exist_ok=True)
-    for output_name,(download_url,save_file,md5) in download_data.items():
-        save_file = download_file(download_url,save_file,md5)
-        download_data[output_name] = [download_url,save_file,md5]
-
-    print("Extracting files...")
-    for output_name,(download_url,save_file,md5) in download_data.items():
-        if output_name.endswith(".tgz"):
-            extract_tgz_to_original_folder(save_file)
-        elif output_name.endswith(".tar"):
-            extract_tar_to_original_folder(save_file)
-        else:
-            print("unknow file type",output_name)
-
-    print("Done!")
-
-if __name__ == "__main__":
+if __name__ == '__main__':
+    # 需要先安装 tqdm: pip install tqdm
     main()
