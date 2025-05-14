@@ -2,8 +2,9 @@ import os
 import hashlib
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from tqdm import tqdm
+import tarfile
 
-# 文件信息
 files = {
     'v1.0-trainval01_blobs.tgz': ['https://motional-nuscenes.s3.amazonaws.com/public/v1.0/v1.0-trainval01_blobs.tgz', './v1.0-trainval01_blobs.tgz', 'cbf32d2ea6996fc599b32f724e7ce8f2'],
     'v1.0-trainval02_blobs.tgz': ['https://motional-nuscenes.s3.amazonaws.com/public/v1.0/v1.0-trainval02_blobs.tgz', './v1.0-trainval02_blobs.tgz', 'aeecea4878ec3831d316b382bb2f72da'],
@@ -28,35 +29,55 @@ def md5sum(filename, buf_size=1024*1024):
             md5.update(data)
     return md5.hexdigest()
 
-def download_file(name, url, out_path, md5):
-    print(f'开始下载: {name}')
+def extract_tar(filepath, position):
+    try:
+        with tarfile.open(filepath, 'r:*') as tar:
+            # 解压到当前目录
+            tar.extractall(path=os.path.dirname(filepath))
+        tqdm.write(f"[{os.path.basename(filepath)}] 解压完成。")
+    except Exception as e:
+        tqdm.write(f"[{os.path.basename(filepath)}] 解压失败：{e}")
+
+def download_file(name, url, out_path, md5, position):
     try:
         with requests.get(url, stream=True, timeout=60) as r:
             r.raise_for_status()
             total = int(r.headers.get('content-length', 0))
-            with open(out_path, 'wb') as f:
-                downloaded = 0
-                for chunk in r.iter_content(chunk_size=8192):
+            desc = f"{name}"
+            with open(out_path, 'wb') as f, tqdm(
+                desc=desc,
+                total=total,
+                unit='B',
+                unit_scale=True,
+                unit_divisor=1024,
+                position=position,
+                leave=True,
+                miniters=1,
+                ascii=True,
+                dynamic_ncols=True,
+            ) as bar:
+                for chunk in r.iter_content(chunk_size=1024 * 1024):
                     if chunk:
                         f.write(chunk)
-                        downloaded += len(chunk)
-                        print(f'\r{name} 下载进度: {downloaded/total*100:.2f}%', end='')
-        print(f'\n{name} 下载完成，正在校验MD5...')
+                        bar.update(len(chunk))
+        # 校验MD5
         file_md5 = md5sum(out_path)
         if file_md5 != md5:
-            print(f'错误: {name} MD5校验失败！期望:{md5} 实际:{file_md5}')
+            tqdm.write(f"[{name}] 错误: MD5校验失败！期望:{md5} 实际:{file_md5}")
         else:
-            print(f'{name} 下载并校验成功。')
+            tqdm.write(f"[{name}] 下载并校验成功，开始解压...")
+            extract_tar(out_path, position)
     except Exception as e:
-        print(f'错误: 下载{name}失败，原因: {e}')
+        tqdm.write(f"[{name}] 错误: 下载失败，原因: {e}")
 
 def main():
     with ThreadPoolExecutor(max_workers=6) as executor:
         futures = []
-        for name, (url, out_path, md5) in files.items():
-            futures.append(executor.submit(download_file, name, url, out_path, md5))
+        for idx, (name, (url, out_path, md5)) in enumerate(files.items()):
+            futures.append(executor.submit(download_file, name, url, out_path, md5, idx))
         for future in as_completed(futures):
-            future.result()  # 抛出异常
+            future.result()
 
 if __name__ == '__main__':
+    # 需要先安装 tqdm: pip install tqdm
     main()
